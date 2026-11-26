@@ -2,6 +2,7 @@
  * Mock payment gateway dùng chung cho 3 provider:
  * ghi giao dịch vào "sổ cái" của provider (MockPayment) rồi bắn webhook về app.
  */
+import { after } from "next/server";
 import { prisma } from "@/lib/db";
 import { roundCurrency } from "@/lib/fx";
 import type { Prisma } from "@/generated/prisma/client";
@@ -54,7 +55,7 @@ export async function recordPayment(input: {
   });
 
   // webhook bất đồng bộ, như provider thật
-  void sendWebhook(input.provider, {
+  const webhookBody = {
     event:
       input.kind === "BANK_INBOUND"
         ? "inbound_transfer.received"
@@ -73,13 +74,19 @@ export async function recordPayment(input: {
       payerName: input.payerName,
       createdAt: payment.createdAt.toISOString(),
     },
-  });
+  };
+  // after(): gửi sau khi trả response – an toàn trên serverless (Vercel)
+  try {
+    after(() => sendWebhook(input.provider, webhookBody));
+  } catch {
+    void sendWebhook(input.provider, webhookBody); // ngoài request (script/test)
+  }
 
   return payment;
 }
 
 async function sendWebhook(provider: Provider, body: Record<string, unknown>) {
-  const url = `${process.env.APP_URL ?? "http://127.0.0.1:3000"}/api/webhooks/${provider.toLowerCase()}`;
+  const url = `${process.env.APP_URL ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://127.0.0.1:3000")}/api/webhooks/${provider.toLowerCase()}`;
   const payload = JSON.stringify({ id: `evt_${Date.now()}`, ...body });
   await new Promise((r) => setTimeout(r, 300));
   for (let attempt = 1; attempt <= 3; attempt++) {
