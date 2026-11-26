@@ -1,0 +1,365 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Provider {
+  PINGPONG
+  PAYONEER
+  WORLDFIRST
+}
+
+enum Direction {
+  IN
+  OUT
+}
+
+enum TxStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum TxType {
+  COLLECTION // tiền về từ marketplace / khách hàng
+  TRANSFER_IN // nhận chuyển khoản
+  WITHDRAWAL // rút về ngân hàng
+  PAYMENT // thanh toán cho nhà cung cấp
+  CARD // giao dịch thẻ
+  FX // đổi ngoại tệ
+  FEE // phí
+  REFUND
+  OTHER
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+/// Một tài khoản đã kết nối (1 login PingPong / Payoneer / WorldFirst)
+model Account {
+  id            String    @id @default(cuid())
+  provider      Provider
+  name          String
+  /// Base URL của API (mock hoặc thật)
+  baseUrl       String
+  /// Credentials đã mã hóa AES-256-GCM
+  credentials   String
+  enabled       Boolean   @default(true)
+  lastSyncedAt  DateTime?
+  /// Mốc thời gian giao dịch đã đồng bộ tới (cursor cho incremental sync)
+  syncCursor    DateTime?
+  lastError     String?
+  /// ID tài khoản phía provider (app_id / payee_id / client_id) – dùng map webhook
+  externalAccountId String? @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  balances     Balance[]
+  transactions Transaction[]
+  syncRuns     SyncRun[]
+  imports      ImportBatch[]
+}
+
+/// Số dư theo từng ví/currency
+model Balance {
+  id         String   @id @default(cuid())
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  currency   String   @db.VarChar(3)
+  available  Decimal  @db.Decimal(20, 4)
+  pending    Decimal  @default(0) @db.Decimal(20, 4)
+  /// Quy đổi USD để tổng hợp
+  availableUsd Decimal @default(0) @db.Decimal(20, 4)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([accountId, currency])
+}
+
+/// Giao dịch đã chuẩn hóa từ mọi provider
+model Transaction {
+  id              String    @id @default(cuid())
+  accountId       String
+  account         Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  provider        Provider
+  externalId      String
+  direction       Direction
+  type            TxType
+  status          TxStatus
+  /// Số tiền luôn dương; chiều tiền ở `direction`
+  amount          Decimal   @db.Decimal(20, 4)
+  currency        String    @db.VarChar(3)
+  fee             Decimal   @default(0) @db.Decimal(20, 4)
+  feeCurrency     String?   @db.VarChar(3)
+  /// Với giao dịch FX: số tiền/tiền tệ phía bên kia
+  counterAmount   Decimal?  @db.Decimal(20, 4)
+  counterCurrency String?   @db.VarChar(3)
+  fxRate          Decimal?  @db.Decimal(20, 8)
+  amountUsd       Decimal   @db.Decimal(20, 4)
+  counterparty    String?
+  description     String?
+  reference       String?
+  occurredAt      DateTime
+  /// api | import
+  source          String    @default("api")
+  importBatchId   String?
+  importBatch     ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  /// Payload gốc từ provider để đối soát
+  raw             Json
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([accountId, externalId])
+  @@index([occurredAt])
+  @@index([provider, occurredAt])
+  @@index([currency])
+  @@index([status])
+}
+
+model SyncRun {
+  id         String     @id @default(cuid())
+  accountId  String
+  account    Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  trigger    String // "schedule" | "manual" | "cli"
+  status     SyncStatus @default(RUNNING)
+  startedAt  DateTime   @default(now())
+  finishedAt DateTime?
+  fetched    Int        @default(0)
+  inserted   Int        @default(0)
+  updated    Int        @default(0)
+  error      String?
+
+  @@index([accountId, startedAt])
+}
+
+// ───────────────────────── Storefront ─────────────────────────
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  AWAITING_TRANSFER
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CARD
+  WALLET
+  BANK_TRANSFER
+  STORE_WALLET
+}
+
+model Product {
+  id          String         @id @default(cuid())
+  slug        String         @unique
+  name        String
+  category    String
+  description String
+  image       String
+  color       String
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  prices      ProductPrice[]
+  orderItems  OrderItem[]
+}
+
+/// Giá niêm yết theo từng thị trường/tiền tệ (localized pricing – không quy đổi lúc thanh toán)
+model ProductPrice {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  currency  String  @db.VarChar(3)
+  amount    Decimal @db.Decimal(20, 4)
+
+  @@unique([productId, currency])
+}
+
+model Order {
+  id            String         @id @default(cuid())
+  number        String         @unique
+  userId        String?
+  user          User?          @relation(fields: [userId], references: [id])
+  email         String
+  customerName  String
+  country       String
+  address       String
+  currency      String         @db.VarChar(3)
+  subtotal      Decimal        @db.Decimal(20, 4)
+  shipping      Decimal        @db.Decimal(20, 4)
+  total         Decimal        @db.Decimal(20, 4)
+  status        OrderStatus    @default(PENDING_PAYMENT)
+  paymentMethod PaymentMethod?
+  provider      Provider?
+  /// ID giao dịch phía provider
+  paymentRef    String?
+  /// Mã nội dung chuyển khoản (bank transfer)
+  bankReference String?        @unique
+  paidAt        DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  items         OrderItem[]
+  events        PaymentEvent[]
+  walletTxs     WalletTransaction[]
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  name      String
+  quantity  Int
+  unitPrice Decimal @db.Decimal(20, 4)
+  lineTotal Decimal @db.Decimal(20, 4)
+}
+
+/// Timeline thanh toán của đơn hàng
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  type      String
+  message   String
+  data      Json?
+  createdAt DateTime @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+// ───────────────────────── Mock provider "database" ─────────────────────────
+// Bảng này đóng vai trò dữ liệu nội bộ của PingPong/Payoneer/WorldFirst giả lập.
+// App KHÔNG đọc trực tiếp – chỉ đọc qua mock API (giống như với provider thật).
+
+model MockPayment {
+  id          String   @id @default(cuid())
+  provider    Provider
+  merchantKey String
+  externalId  String   @unique
+  kind        String // COLLECTION | CARD_ACQUIRING | WALLET_PAY | BANK_INBOUND
+  amount      Decimal  @db.Decimal(20, 4)
+  fee         Decimal  @db.Decimal(20, 4)
+  currency    String   @db.VarChar(3)
+  status      String // PENDING | COMPLETED | FAILED
+  payerName   String
+  payerEmail  String?
+  reference   String?
+  description String?
+  meta        Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([provider, merchantKey, createdAt])
+}
+
+// ───────────────────────── Users & ví khách hàng ─────────────────────────
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+model User {
+  id           String              @id @default(cuid())
+  email        String              @unique
+  name         String
+  passwordHash String
+  role         Role                @default(CUSTOMER)
+  createdAt    DateTime            @default(now())
+  sessions     Session[]
+  wallets      Wallet[]
+  walletTxs    WalletTransaction[]
+  orders       Order[]
+}
+
+model Session {
+  /// sha256(token) – token gốc chỉ nằm trong cookie
+  id        String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// Ví đa tiền tệ của khách: mỗi currency một ví, không tự quy đổi
+model Wallet {
+  id           String              @id @default(cuid())
+  userId       String
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currency     String              @db.VarChar(3)
+  balance      Decimal             @default(0) @db.Decimal(20, 4)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  transactions WalletTransaction[]
+
+  @@unique([userId, currency])
+}
+
+enum WalletTxType {
+  TOPUP
+  PAYMENT
+  REFUND
+  ADJUSTMENT
+}
+
+/// Sổ giao dịch ví (tiền vào/ra), không phải log hoạt động
+model WalletTransaction {
+  id           String       @id @default(cuid())
+  walletId     String
+  wallet       Wallet       @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         WalletTxType
+  direction    Direction
+  status       TxStatus
+  amount       Decimal      @db.Decimal(20, 4)
+  currency     String       @db.VarChar(3)
+  /// Số dư ví ngay sau giao dịch (khi COMPLETED)
+  balanceAfter Decimal?     @db.Decimal(20, 4)
+  /// CARD | WALLET | BANK_TRANSFER | STORE_WALLET
+  method       String
+  provider     Provider?
+  /// Mã giao dịch phía provider
+  externalRef  String?
+  /// Mã tham chiếu nội bộ (TU-xxxx / mã đơn) – cũng là nội dung chuyển khoản
+  reference    String       @unique
+  orderId      String?
+  order        Order?       @relation(fields: [orderId], references: [id])
+  description  String
+  failReason   String?
+  createdAt    DateTime     @default(now())
+  completedAt  DateTime?
+
+  @@index([userId, createdAt])
+  @@index([walletId, createdAt])
+}
+
+// ───────────────────────── Import sao kê ─────────────────────────
+
+model ImportBatch {
+  id           String        @id @default(cuid())
+  accountId    String
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  fileName     String
+  totalRows    Int
+  inserted     Int
+  updated      Int
+  skipped      Int
+  mapping      Json
+  createdBy    String?
+  createdAt    DateTime      @default(now())
+  transactions Transaction[]
+}
