@@ -103,3 +103,11 @@ Format mock **mô phỏng** chứ không phải spec chính thức. Khi có tài
 4. Đăng ký webhook URL `https://<domain>/api/webhooks/<provider>` và thay phần verify chữ ký theo spec provider.
 
 > ⚠️ Trước khi deploy công khai: đổi mật khẩu/xóa tài khoản demo, đặt `ENCRYPTION_KEY`, `WEBHOOK_SECRET` mới (file `.env` kèm theo chỉ là giá trị demo), bật HTTPS. Tỷ giá USD tham chiếu ở `src/lib/fx.ts` là bảng tĩnh.
+
+## Deploy lên Vercel
+
+1. Import repo trên vercel.com/new.
+2. Thêm tích hợp **Prisma Postgres** (Storage) với prefix `DATABASE` → Vercel tạo sẵn `DATABASE_URL`.
+3. Deploy. Lệnh build trong `vercel.json` tự chạy `prisma db push` + seed dữ liệu demo.
+
+Trên Vercel: auto-sync chạy bằng Vercel Cron (`/api/cron/sync`, gói Hobby: 1 lần/ngày); webhook vẫn cập nhật realtime. Đặt `CRON_SECRET` nếu muốn khóa endpoint cron.
