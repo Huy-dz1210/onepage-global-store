@@ -7,7 +7,7 @@ import { MOCK_MERCHANTS } from "../src/lib/mock/accounts";
 import { PROVIDER_META } from "../src/lib/providers/meta";
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/fintrack?schema=public" }) });
-const APP_URL = process.env.APP_URL ?? "http://127.0.0.1:3000";
+const APP_URL = process.env.APP_URL ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://127.0.0.1:3000");
 
 const PRODUCTS = [
   { slug: "canvas-tote", name: "Everyday Canvas Tote", category: "Bags", image: "tote", usd: 39, color: "Sand", description: "Túi tote canvas dày 16oz, quai da thật, ngăn trong có khóa kéo." },
