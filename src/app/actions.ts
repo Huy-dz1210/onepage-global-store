@@ -62,7 +62,7 @@ export async function addAccount(formData: FormData) {
   const creds: Record<string, string> = {};
   for (const f of meta.fields) creds[f.key] = String(formData.get(f.key) ?? "").trim();
   const importOnly = formData.get("importOnly") === "on";
-  const baseUrl = importOnly ? "import://" : String(formData.get("baseUrl") || `${process.env.APP_URL}${meta.mockPath}`);
+  const baseUrl = importOnly ? "import://" : String(formData.get("baseUrl") || `${process.env.APP_URL ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://127.0.0.1:3000")}${meta.mockPath}`);
   const account = await prisma.account.create({
     data: {
       provider,
